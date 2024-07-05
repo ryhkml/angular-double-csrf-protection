@@ -1,9 +1,40 @@
-import { ApplicationConfig } from '@angular/core';
-import { provideRouter } from '@angular/router';
+import { APP_INITIALIZER, ApplicationConfig } from "@angular/core";
+import { provideRouter, withEnabledBlockingInitialNavigation } from "@angular/router";
+import { provideClientHydration } from "@angular/platform-browser";
+import { HttpClient, provideHttpClient, withFetch, withInterceptors } from "@angular/common/http";
 
-import { routes } from './app.routes';
-import { provideClientHydration } from '@angular/platform-browser';
+import { take, tap } from "rxjs";
+
+import { httpInterceptor } from "./http.interceptor";
+import { TokenService } from "./token.service";
+import { routes } from "./app.routes";
 
 export const appConfig: ApplicationConfig = {
-  providers: [provideRouter(routes), provideClientHydration()]
+	providers: [
+		provideRouter(
+			routes,
+			withEnabledBlockingInitialNavigation()
+		),
+		provideClientHydration(),
+		provideHttpClient(
+			withFetch(),
+			withInterceptors([
+				httpInterceptor
+			])
+		),
+		{
+			provide: APP_INITIALIZER,
+			useFactory: (http: HttpClient, token: TokenService) => {
+				return () => http.get<{ token: string }>("/token/session").pipe(
+					tap(res => token.next(res.token)),
+					take(1)
+				);
+			},
+			multi: true,
+			deps: [
+				HttpClient,
+				TokenService
+			]
+		}
+	]
 };

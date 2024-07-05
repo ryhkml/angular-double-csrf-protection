@@ -8,8 +8,7 @@
 
 # Node
 /node_modules
-npm-debug.log
-yarn-error.log
+**/*.log
 
 # IDEs and editors
 .idea/
@@ -22,14 +21,14 @@ yarn-error.log
 
 # Visual Studio Code
 .vscode/*
+.history/*
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
-.history/*
 
 # Miscellaneous
-/.angular/cache
+.angular
 .sass-cache/
 /connect.lock
 /coverage
@@ -40,3 +39,14 @@ testem.log
 # System files
 .DS_Store
 Thumbs.db
+
+# env
+.env*
+!.env.example
+
+# TLS/SSL
+tls/*.pem
+tls/*.crt
+
+# Note
+note.txt

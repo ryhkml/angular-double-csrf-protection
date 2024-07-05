@@ -1,56 +1,139 @@
-import { APP_BASE_HREF } from '@angular/common';
-import { CommonEngine } from '@angular/ssr';
-import express from 'express';
-import { fileURLToPath } from 'node:url';
-import { dirname, join, resolve } from 'node:path';
-import bootstrap from './src/main.server';
+import "zone.js/node";
+
+import { APP_BASE_HREF } from "@angular/common";
+import { CommonEngine } from "@angular/ssr";
+
+import { existsSync, readFileSync } from "node:fs";
+import { createServer } from "node:https";
+import { cwd, env } from "node:process";
+import { join } from "node:path";
+
+import express, { NextFunction, Request, Response } from "express";
+import { doubleCsrf } from "csrf-csrf";
+import { json } from "body-parser";
+
+import { REQUEST, RESPONSE } from "./src/express.token";
+
+import bootstrap from "./src/main.server";
+
+import cookieParser from "cookie-parser";
+import compression from "compression";
+import cors from "cors";
 
 // The Express app is exported so that it can be used by serverless Functions.
 export function app(): express.Express {
-  const server = express();
-  const serverDistFolder = dirname(fileURLToPath(import.meta.url));
-  const browserDistFolder = resolve(serverDistFolder, '../browser');
-  const indexHtml = join(serverDistFolder, 'index.server.html');
+	const server = express();
+    const browserDir = join(cwd(), "dist/hello/browser");
+    const indexHtml = existsSync(join(browserDir, "index.original.html"))
+        ? join(browserDir, "index.original.html")
+        : join(browserDir, "index.html");
 
-  const commonEngine = new CommonEngine();
+	const commonEngine = new CommonEngine();
 
-  server.set('view engine', 'html');
-  server.set('views', browserDistFolder);
+	server.set("view engine", "html");
+	server.set("views", browserDir);
+	server.set("trust proxy", 1);
+	
+	server.disable("x-powered-by");
 
-  // Example Express Rest API endpoints
-  // server.get('/api/**', (req, res) => { });
-  // Serve static files from /browser
-  server.get('*.*', express.static(browserDistFolder, {
-    maxAge: '1y'
-  }));
+	// Middleware
+	server.use(compression());
+	server.use(json());
+	server.use(cookieParser(env["COOKIE_PARSER_SECRET"]));
 
-  // All regular routes use the Angular engine
-  server.get('*', (req, res, next) => {
-    const { protocol, originalUrl, baseUrl, headers } = req;
+	const { invalidCsrfTokenError, generateToken, doubleCsrfProtection } = doubleCsrf({
+		cookieName: String(env["COOKIE_NAME"]),
+		getSecret: () => String(env["COOKIE_SECRET"]),
+		cookieOptions: {
+			sameSite: "strict",
+			path: "/",
+			secure: true,
+			maxAge: Number(env["COOKIE_MAX_AGE"])
+		},
+		getTokenFromRequest: req => String(req.headers["x-csrf-token"])
+	});
 
-    commonEngine
-      .render({
-        bootstrap,
-        documentFilePath: indexHtml,
-        url: `${protocol}://${headers.host}${originalUrl}`,
-        publicPath: browserDistFolder,
-        providers: [{ provide: APP_BASE_HREF, useValue: baseUrl }],
-      })
-      .then((html) => res.send(html))
-      .catch((err) => next(err));
-  });
+	// Routes
+	// @ts-ignore
+	server.get("/token/session", cors({
+		origin: true,
+		methods: [
+			"GET",
+			"HEAD"
+		]
+	}), (req, res) => {
+		return res
+			.setHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+			.json({
+				token: generateToken(req, res)
+			});
+	});
 
-  return server;
+	// @ts-ignore
+	function csrfErrorHandler(error, req, res: Response, next) {
+		// Handing CSRF mismatch errors
+		// For production use: send to a logger
+		if (error == invalidCsrfTokenError) {
+			return res.status(403).end();
+		}
+		next();
+	};
+
+	server.use(doubleCsrfProtection);
+	server.use(csrfErrorHandler);
+
+	server.post("/register", cors({
+		origin: true,
+		methods: "POST"
+	}), (_, res) => {
+		return res.json({
+			status: "OK"
+		});
+	});
+
+	// Example Express Rest API endpoints
+	// server.get("/api/**", (req, res) => { });
+	// Serve static files from /browser
+	server.get("*.*", express.static(browserDir, {
+		maxAge: "1y"
+	}));
+
+	// All regular routes use the Angular engine
+	// @ts-ignore
+	server.get("*", (req, res, next) => {
+		const { protocol, originalUrl, baseUrl, headers } = req;
+		commonEngine
+			.render({
+				bootstrap,
+				documentFilePath: indexHtml,
+				url: `${protocol}://${headers.host}${originalUrl}`,
+				publicPath: browserDir,
+				providers: [
+					{ provide: APP_BASE_HREF, useValue: baseUrl },
+					{ provide: REQUEST, useValue: req },
+					{ provide: RESPONSE, useValue: res }
+				]
+			})
+			.then(html => res.send(html))
+			.catch(err => next(err));
+	});
+
+	return server;
 }
 
-function run(): void {
-  const port = process.env['PORT'] || 4000;
-
-  // Start up the Node server
-  const server = app();
-  server.listen(port, () => {
-    console.log(`Node Express server listening on http://localhost:${port}`);
-  });
+function run() {
+	const port = Number(env["PORT"]) || 4200;
+	if (env["SERVE_PROTOCOL"] == "https") {
+		const server = createServer({
+			cert: readFileSync("tls/fullchain.pem"),
+			key: readFileSync("tls/cert-key.pem")
+		}, app());
+		server.listen(port);
+		console.log("Server listening on", "https://localhost:" + port);
+	} else {
+		app().listen(port);
+		console.log("Server listening on", "http://localhost:" + port);
+	}
 }
 
 run();
