@@ -8,11 +8,12 @@ import { createServer } from "node:https";
 import { cwd, env } from "node:process";
 import { join } from "node:path";
 
-import express, { NextFunction, Request, Response } from "express";
+import express, { Response } from "express";
 import { doubleCsrf } from "csrf-csrf";
 import { json } from "body-parser";
 
-import { REQUEST, RESPONSE } from "./src/express.token";
+import { RESPONSE } from "./src/express.token";
+import { REQUEST as SSR_REQUEST } from "ngx-cookie-service-ssr";
 
 import bootstrap from "./src/main.server";
 
@@ -23,17 +24,17 @@ import cors from "cors";
 // The Express app is exported so that it can be used by serverless Functions.
 export function app(): express.Express {
 	const server = express();
-    const browserDir = join(cwd(), "dist/hello/browser");
-    const indexHtml = existsSync(join(browserDir, "index.original.html"))
-        ? join(browserDir, "index.original.html")
-        : join(browserDir, "index.html");
+	const browserDir = join(cwd(), "dist/hello/browser");
+	const indexHtml = existsSync(join(browserDir, "index.original.html"))
+		? join(browserDir, "index.original.html")
+		: join(browserDir, "index.html");
 
 	const commonEngine = new CommonEngine();
 
 	server.set("view engine", "html");
 	server.set("views", browserDir);
-	server.set("trust proxy", 1);
-	
+	server.set("trust proxy", true);
+
 	server.disable("x-powered-by");
 
 	// Middleware
@@ -47,56 +48,60 @@ export function app(): express.Express {
 		cookieOptions: {
 			sameSite: "strict",
 			path: "/",
-			secure: true,
-			maxAge: Number(env["COOKIE_MAX_AGE"])
+			secure: true
 		},
-		getTokenFromRequest: req => String(req.headers["x-csrf-token"])
+		getTokenFromRequest: (req) => String(req.headers["x-csrf-token"])
 	});
 
 	// Routes
 	// @ts-ignore
-	server.get("/token/session", cors({
-		origin: true,
-		methods: [
-			"GET",
-			"HEAD"
-		]
-	}), (req, res) => {
-		return res
-			.setHeader("Cache-Control", "no-cache, no-store, must-revalidate")
-			.json({
-				token: generateToken(req, res)
-			});
-	});
+	server.get(
+		"/token/session",
+		cors({
+			origin: true,
+			methods: ["GET", "HEAD"]
+		}),
+		(req, res) =>
+			res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate").json({
+				token: generateToken(req, res, true)
+			})
+	);
 
 	// @ts-ignore
-	function csrfErrorHandler(error, req, res: Response, next) {
+	function csrfErrorHandler(error, _, res: Response, next) {
 		// Handing CSRF mismatch errors
 		// For production use: send to a logger
 		if (error == invalidCsrfTokenError) {
 			return res.status(403).end();
 		}
 		next();
-	};
+	}
 
 	server.use(doubleCsrfProtection);
 	server.use(csrfErrorHandler);
 
-	server.post("/register", cors({
-		origin: true,
-		methods: "POST"
-	}), (_, res) => {
-		return res.json({
-			status: "OK"
-		});
-	});
+	server.post(
+		"/register",
+		cors({
+			origin: true,
+			methods: "POST"
+		}),
+		(_, res) => {
+			return res.json({
+				status: "OK"
+			});
+		}
+	);
 
 	// Example Express Rest API endpoints
 	// server.get("/api/**", (req, res) => { });
 	// Serve static files from /browser
-	server.get("*.*", express.static(browserDir, {
-		maxAge: "1y"
-	}));
+	server.get(
+		"*.*",
+		express.static(browserDir, {
+			maxAge: "1y"
+		})
+	);
 
 	// All regular routes use the Angular engine
 	// @ts-ignore
@@ -110,12 +115,12 @@ export function app(): express.Express {
 				publicPath: browserDir,
 				providers: [
 					{ provide: APP_BASE_HREF, useValue: baseUrl },
-					{ provide: REQUEST, useValue: req },
+					{ provide: SSR_REQUEST, useValue: req },
 					{ provide: RESPONSE, useValue: res }
 				]
 			})
-			.then(html => res.send(html))
-			.catch(err => next(err));
+			.then((html) => res.send(html))
+			.catch((err) => next(err));
 	});
 
 	return server;
@@ -124,10 +129,13 @@ export function app(): express.Express {
 function run() {
 	const port = Number(env["PORT"]) || 4200;
 	if (env["SERVE_PROTOCOL"] == "https") {
-		const server = createServer({
-			cert: readFileSync("tls/fullchain.pem"),
-			key: readFileSync("tls/cert-key.pem")
-		}, app());
+		const server = createServer(
+			{
+				cert: readFileSync("tls/fullchain.pem"),
+				key: readFileSync("tls/cert-key.pem")
+			},
+			app()
+		);
 		server.listen(port);
 		console.log("Server listening on", "https://localhost:" + port);
 	} else {
